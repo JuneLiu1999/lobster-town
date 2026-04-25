@@ -43,7 +43,7 @@ action 类型与 content 规则：
 - **`me: true` 的 speak 事件**（已经被你说出口的话）：
   - `source=agent`：你**自主**说的，已经发生过了，**不要重复**
   - `source=player`：**legacy /say 路径**才会有，把它视同 directive 处理
-- **如果 `me: false` 且 `type=speak`**（别人在跟你或在你附近说话），优先用 `speak` 回应（用 emote 也可以，但更推荐直接说话）
+- **被搭话必须回应**：如果 `recent_events` 里有 `me: false` 且 `type=speak` 的事件，**且这条 speak 之后你（me:true）还没有 speak 过**，那就**必须**用 `speak` 回应——**不能选 idle 或 emote**。回应可以简短、可以转移话题，但不能装作没听见。同地点 NPC（吟游诗人/客栈老板娘）主动跟你说话时同样必须回。
 - **不要重复发 change_location 去你已经所在的地点**（看 perception.location.id）
 - speak 控制在 1-3 句
 - 不要调用任何外部工具（web、搜索、代码执行等），小镇里没有这些

@@ -117,13 +117,49 @@ class BehaviorLoop:
             # 成功一次 → 重置退避
             self._reconnect_delay = 2.0
 
-            # 主消息循环（终端只读，不再接受 stdin。指令请用浏览器或 `lobster-town tell`）
-            async for raw in ws:
-                try:
-                    msg = json.loads(raw)
-                except json.JSONDecodeError:
+            # 主消息循环（终端只读。指令请用浏览器或 `lobster-town tell`）
+            #
+            # 关键设计：因为 OpenClaw 一次决策可能比 tick 间隔（10s）还久，
+            # WS 缓冲会堆积过期 perception。每次准备处理一条消息时，先非阻塞地
+            # 把缓冲里所有"更新的 perception"都拿出来——只保留最新的那条，把
+            # 中间过期的 perception 直接扔掉。让 Luca 总是基于最新世界状态思考。
+            while True:
+                raw = await ws.recv()
+                msg = self._safe_load(raw)
+                if msg is None:
                     continue
-                await self._handle_message(ws, msg)
+                # 把缓冲里立即可读的消息都吸出来
+                queued: list[dict[str, Any]] = []
+                while True:
+                    try:
+                        raw2 = await asyncio.wait_for(ws.recv(), timeout=0.01)
+                    except asyncio.TimeoutError:
+                        break
+                    m2 = self._safe_load(raw2)
+                    if m2 is not None:
+                        queued.append(m2)
+                # 优先处理非 perception 类的（ping/error/welcome），按到达顺序
+                # perception 只保留最新一条
+                latest_perception = msg if msg.get("type") == "perception" else None
+                non_perceptions = [] if latest_perception is not None else [msg]
+                for m in queued:
+                    if m.get("type") == "perception":
+                        if latest_perception is not None:
+                            logger.debug("dropped stale perception")
+                        latest_perception = m
+                    else:
+                        non_perceptions.append(m)
+                for m in non_perceptions:
+                    await self._handle_message(ws, m)
+                if latest_perception is not None:
+                    await self._handle_message(ws, latest_perception)
+
+    @staticmethod
+    def _safe_load(raw: str) -> dict[str, Any] | None:
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return None
 
     async def _handle_message(self, ws: Any, msg: dict[str, Any]) -> None:
         mtype = msg.get("type")

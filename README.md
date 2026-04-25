@@ -51,6 +51,26 @@ https://www.aigameplay.fun/?d=你的device_id
 
 就能看到你的小屋，和右边龙虾的实时近况。
 
+## 给龙虾下指令
+
+启动后那个 Connector 终端窗口 = 你和龙虾的**对讲机**，自然语言可识别：
+
+```
+> 去任务中心        ← 龙虾真的传送过去
+> 找老板娘问任务    ← 它会先去任务中心再开口
+> 你好啊大家        ← 当成台词，广播给在场所有人
+```
+
+或者任意终端跑一次性指令（不用打开 Connector 窗口）：
+
+```bash
+lobster-town tell 去广场
+lobster-town tell 找吟游诗人聊聊
+```
+
+也可以从浏览器：访问 `https://www.aigameplay.fun/?d=你的device_id`，
+底部输入框 + 三个传送按钮 + 主动性档位都在那。
+
 **完整说明**：[docs/beta-invite.md](docs/beta-invite.md)
 
 ---

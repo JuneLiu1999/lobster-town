@@ -26,13 +26,11 @@ from lobster_town.perception import Perception
 from lobster_town.thought_display import ThoughtBuffer
 from lobster_town.ui import (
     print_action,
-    print_autonomy_changed,
     print_connected,
     print_connecting,
     print_disconnected,
     print_error,
     print_perception_summary,
-    print_player_speak,
     print_thought,
     print_welcome_prompt,
 )
@@ -86,7 +84,6 @@ class BehaviorLoop:
         print_connecting(ws_url)
 
         headers = {"X-Device-ID": self.identity.device_id}
-        stdin_task: asyncio.Task | None = None
         async with websockets.connect(
             ws_url,
             additional_headers=headers,
@@ -120,20 +117,13 @@ class BehaviorLoop:
             # 成功一次 → 重置退避
             self._reconnect_delay = 2.0
 
-            # 4. 启动 stdin reader（接收用户打字 / 主动性热键）
-            stdin_task = asyncio.create_task(self._stdin_loop(ws))
-
-            # 5. 主消息循环
-            try:
-                async for raw in ws:
-                    try:
-                        msg = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    await self._handle_message(ws, msg)
-            finally:
-                if stdin_task and not stdin_task.done():
-                    stdin_task.cancel()
+            # 主消息循环（终端只读，不再接受 stdin。指令请用浏览器或 `lobster-town tell`）
+            async for raw in ws:
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                await self._handle_message(ws, msg)
 
     async def _handle_message(self, ws: Any, msg: dict[str, Any]) -> None:
         mtype = msg.get("type")
@@ -175,40 +165,6 @@ class BehaviorLoop:
 
         logger.info(f"Unknown message type: {mtype}")
 
-
-    async def _stdin_loop(self, ws: Any) -> None:
-        """另起一个任务读 stdin。/1 /2 /3 切档，/q 退出，其他文本 → user_speak。"""
-        import sys
-
-        if not sys.stdin or not sys.stdin.isatty():
-            return  # 非交互（被 pipe / 重定向）就不读
-
-        loop = asyncio.get_running_loop()
-        while True:
-            try:
-                line = await loop.run_in_executor(None, sys.stdin.readline)
-            except (EOFError, RuntimeError):
-                return
-            if not line:
-                return
-            text = line.strip()
-            if not text:
-                continue
-
-            if text in ("/q", "/quit", "/exit"):
-                await ws.close()
-                return
-
-            level_map = {"/1": "auto", "/2": "passive", "/3": "manual"}
-            if text in level_map:
-                level = level_map[text]
-                await ws.send(json.dumps({"type": "set_autonomy", "level": level}))
-                print_autonomy_changed(level)
-                continue
-
-            # 其他都当玩家替龙虾说的话
-            await ws.send(json.dumps({"type": "user_speak", "content": text}))
-            print_player_speak(text)
 
 
 def _ws_url(base_url: str, path: str) -> str:

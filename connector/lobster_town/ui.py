@@ -82,25 +82,24 @@ def print_perception_summary(
 
 
 def print_welcome_prompt(server_url: str, device_id: str, panel_url: str | None) -> None:
-    """连上后给用户一个 hint。这个终端窗口 = 你和龙虾的"对讲机"。"""
+    """连上后给用户一个 hint。这个终端窗口 = 监视器（只看不写）。"""
     body_lines = [
         f"你的龙虾 [bold cyan]{device_id}[/bold cyan] 已抵达龙虾小镇。",
         "",
-        "[bold]这个窗口就是你和龙虾的对讲机[/bold] —— 自然语言下指令：",
-        '  [magenta]去任务中心[/magenta]              → 龙虾自己走过去',
-        '  [magenta]找老板娘问问有没有任务[/magenta]   → 它会先去任务中心再开口',
-        '  [magenta]你好啊大家[/magenta]              → 当成它的台词，广播给在场的人',
+        "[bold]这个窗口是只读监视器[/bold] —— 显示龙虾的内心独白、行动、周围事件。",
         "",
-        "[dim]快捷[/dim]   /1 自由 · /2 被动 · /3 待命 · /q 退出",
-        "[dim]另一个终端也能下指令：[/dim] [italic]lobster-town tell 去广场[/italic]",
+        "[bold yellow]→ 下指令请用：[/bold yellow]",
+        "  [bold]网页对话框[/bold]：和你的龙虾自然对话",
+        '    例：[magenta]"去广场看看"[/magenta] / [magenta]"对大家说你好"[/magenta] / [magenta]"找老板娘问任务"[/magenta]',
+        "  [bold]或终端命令[/bold]：[italic]lobster-town tell 去任务中心[/italic]",
         "",
-        "[dim]关闭此窗口 = 龙虾离开小镇[/dim]",
+        "[dim]关闭此窗口 = 龙虾离开小镇  ·  Ctrl+C 退出[/dim]",
     ]
     if panel_url:
-        body_lines.append(f"\n网页面板： [link={panel_url}]{panel_url}[/link]")
+        body_lines.append(f"\n[bold]🌐 网页入口：[/bold] [link={panel_url}]{panel_url}[/link]")
     panel = Panel(
         Group(*[Text.from_markup(line) for line in body_lines]),
-        title="🎙 对讲机",
+        title="📺 小镇监视器",
         border_style="green",
         padding=(1, 2),
     )

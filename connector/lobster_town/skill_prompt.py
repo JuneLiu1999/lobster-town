@@ -32,14 +32,17 @@ action 类型与 content 规则：
 - 保持人设语气
 - thought 写得像真在想
 - 不刷屏；没事可做就 idle 或 emote
-- **`me: true` 的事件按 `payload.source` 分两种含义**：
-  - `source=agent`：你**自主**做的，已经发生过了，**不要重复**
-  - `source=player`：**你的玩家通过你说出来的话/做出来的事**——这是用户对你的真实意图。请按字面去**实际执行**：
-    - "去任务中心" / "去广场" / "回小屋" → 下一动作用 `change_location` 真去
-    - "走到喷泉旁" / "靠近 Bob" → 用 `move` 走过去
-    - "和老板娘说说话" → 先 `change_location` 到 task_hall，到了之后再 `speak`
-    - "打个招呼" / 普通寒暄 → 按字面执行，不需要额外动作
-    - **关键：完成动作之前，不要只把这句话再说一遍**——你已经"说"过了，现在要"做"
+- **`recent_events` 里 `type=directive` 的事件是玩家私下给你的指令**（其他玩家完全看不见这条）。**只有你 me=true 才会出现 directive**。看到指令请理解意图，下一动作执行对应行为：
+  - "去 X" / "回小屋" → `change_location`
+  - "走到喷泉旁" / "走到 (10,12)" → `move`
+  - "对大家说 X" / "说 X" / "跟大家讲 X" → **`speak` 内容只是 X 那部分**（不是整句指令本身）
+  - "找 X 问 Y" → 先 `change_location` 到 X 在的地点，**下一轮**再 `speak` 问
+  - "做个动作 X"（"挥手"/"鞠躬"等）→ `emote`
+  - 不是明确指令的闲聊（"今天天气怎样"）→ 自然 `speak` 回应
+  - **绝对不要把 directive 原文当 speak 广播出去** —— 它本来就是私话
+- **`me: true` 的 speak 事件**（已经被你说出口的话）：
+  - `source=agent`：你**自主**说的，已经发生过了，**不要重复**
+  - `source=player`：**legacy /say 路径**才会有，把它视同 directive 处理
 - **如果 `me: false` 且 `type=speak`**（别人在跟你或在你附近说话），优先用 `speak` 回应（用 emote 也可以，但更推荐直接说话）
 - **不要重复发 change_location 去你已经所在的地点**（看 perception.location.id）
 - speak 控制在 1-3 句

@@ -138,7 +138,7 @@ def tell(message: tuple[str, ...], server: str, quiet: bool) -> None:
 
     try:
         resp = httpx.post(
-            f"{base}/api/devices/{identity.device_id}/say",
+            f"{base}/api/devices/{identity.device_id}/directive",
             json={"content": text},
             timeout=10.0,
         )
@@ -152,8 +152,8 @@ def tell(message: tuple[str, ...], server: str, quiet: bool) -> None:
 
     if not quiet:
         console.print(
-            f"[bold green]✓[/bold green] 已下达：[bold magenta]{text}[/bold magenta]\n"
-            f"[dim]Connector 在跑的话龙虾会按这条指令行动；没在跑也已留在小镇事件里。[/dim]"
+            f"[bold green]✓[/bold green] 已下达指令：[bold magenta]{text}[/bold magenta]\n"
+            f"[dim]Connector 在跑的话，龙虾下一 tick 会理解这条指令并执行。[/dim]"
         )
 
 

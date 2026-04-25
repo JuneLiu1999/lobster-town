@@ -203,13 +203,36 @@ class OpenClawAdapter(AgentAdapter):
 
         try:
             data = json.loads(payload)
-        except json.JSONDecodeError:
-            logger.warning("Unable to parse OpenClaw reply as Skill JSON, returning idle")
+        except json.JSONDecodeError as e:
+            # 检测常见的"非 JSON 但其实是错误信息"——把它带进 thought
+            short = text.strip().splitlines()[0][:200] if text.strip() else ""
+            looks_like_error = bool(short) and any(
+                kw in short for kw in ("limit", "quota", "rate", "Error", "error", "失败", "拒绝")
+            )
+            if looks_like_error:
+                logger.warning("OpenClaw returned non-JSON error: %s", short)
+                return AgentResponse(
+                    thought=f"（OpenClaw 报错：{short}）",
+                    action={"type": "idle"},
+                    raw_text=raw,
+                )
+            logger.warning(
+                "Unable to parse OpenClaw reply as Skill JSON: %s\n"
+                "  ↳ extracted payload (first 500): %s\n"
+                "  ↳ raw text (first 800): %s",
+                e,
+                payload[:500],
+                text[:800],
+            )
             return fallback_idle(raw=raw)
 
         thought = str(data.get("thought", ""))
         action = data.get("action")
         if not isinstance(action, dict) or "type" not in action:
+            logger.warning(
+                "OpenClaw returned JSON without valid action: %s",
+                str(data)[:500],
+            )
             return fallback_idle(raw=raw)
 
         return AgentResponse(thought=thought, action=action, raw_text=raw, tokens_used=tokens_used)

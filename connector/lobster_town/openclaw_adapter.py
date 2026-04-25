@@ -25,7 +25,48 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any
 
-from lobster_town.skill_prompt import SKILL_INLINE
+from lobster_town.skill_prompt import SKILL_INLINE, TOPIC_MODE_INLINE
+
+
+def _has_topic_fields(perception: dict[str, Any]) -> bool:
+    """perception 里是否带了群聊模式字段（后端 TOPIC_MODE_ENABLED=true 时才有）。"""
+    return any(
+        k in perception
+        for k in ("pending_topic_invites", "active_conversations", "topic_join_policy")
+    )
+
+
+def build_perception_summary(perception: dict[str, Any]) -> dict[str, Any]:
+    """提炼给 agent 看的 perception 摘要。共用给 OpenClaw / DeepSeek。"""
+    summary: dict[str, Any] = {
+        "你": perception.get("you"),
+        "地点": {
+            "id": perception["location"]["id"],
+            "名字": perception["location"]["name"],
+            "描述": perception["location"].get("description"),
+            "尺寸": {
+                "width": perception["location"]["width"],
+                "height": perception["location"]["height"],
+            },
+            "装饰物": perception["location"].get("decorations", []),
+        },
+        "周围的角色": perception.get("nearby_characters", []),
+        "最近事件": perception.get("recent_events", []),
+    }
+    if _has_topic_fields(perception):
+        summary["群聊状态"] = {
+            "我的话题加入策略": perception.get("topic_join_policy"),
+            "已加入的群聊": perception.get("active_conversations", []),
+            "待决话题邀请": perception.get("pending_topic_invites", []),
+        }
+    return summary
+
+
+def build_full_skill_prompt(perception: dict[str, Any]) -> str:
+    """根据 perception 是否带群聊字段，决定是否追加 TOPIC_MODE_INLINE。"""
+    if _has_topic_fields(perception):
+        return SKILL_INLINE + "\n\n" + TOPIC_MODE_INLINE
+    return SKILL_INLINE
 
 logger = logging.getLogger(__name__)
 
@@ -135,25 +176,13 @@ class OpenClawAdapter(AgentAdapter):
         MVP 阶段把 Skill 规则内联到 prompt 里，因为 OpenClaw 仅识别 ClawHub
         分发的 skill，手动放到 workspace 不会被加载。未来 skill 上架 ClawHub
         后可以去掉 `SKILL_INLINE` 这段，回到"只发 perception"的形式。
-        """
-        summary = {
-            "你": perception.get("you"),
-            "地点": {
-                "id": perception["location"]["id"],
-                "名字": perception["location"]["name"],
-                "描述": perception["location"].get("description"),
-                "尺寸": {
-                    "width": perception["location"]["width"],
-                    "height": perception["location"]["height"],
-                },
-                "装饰物": perception["location"].get("decorations", []),
-            },
-            "周围的角色": perception.get("nearby_characters", []),
-            "最近事件": perception.get("recent_events", []),
-        }
 
+        群聊模式：当 perception 里出现 pending_topic_invites / active_conversations
+        / topic_join_policy 任一字段时，自动追加 TOPIC_MODE_INLINE 规则段。
+        """
+        summary = build_perception_summary(perception)
         return (
-            SKILL_INLINE
+            build_full_skill_prompt(perception)
             + "\n\n【龙虾小镇 · 场景感知】\n"
             + json.dumps(summary, ensure_ascii=False, indent=2)
             + "\n\n严格按上面的规则，只返回一个 JSON 对象（thought + action），不要任何解释或 markdown 包裹。"

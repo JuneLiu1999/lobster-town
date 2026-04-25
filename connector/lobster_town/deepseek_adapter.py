@@ -18,7 +18,9 @@ import httpx
 from lobster_town.openclaw_adapter import (
     AgentAdapter,
     AgentResponse,
-    SKILL_INLINE,
+    SKILL_INLINE,  # 保留以兼容老脚本
+    build_full_skill_prompt,
+    build_perception_summary,
     fallback_idle,
     find_json_blob,
 )
@@ -47,21 +49,7 @@ class DeepSeekAdapter(AgentAdapter):
         return bool(self._api_key)
 
     async def decide(self, perception: dict[str, Any]) -> AgentResponse:
-        summary = {
-            "你": perception.get("you"),
-            "地点": {
-                "id": perception["location"]["id"],
-                "名字": perception["location"]["name"],
-                "描述": perception["location"].get("description"),
-                "尺寸": {
-                    "width": perception["location"]["width"],
-                    "height": perception["location"]["height"],
-                },
-                "装饰物": perception["location"].get("decorations", []),
-            },
-            "周围的角色": perception.get("nearby_characters", []),
-            "最近事件": perception.get("recent_events", []),
-        }
+        summary = build_perception_summary(perception)
         user_msg = (
             "【龙虾小镇 · 场景感知】\n"
             + json.dumps(summary, ensure_ascii=False, indent=2)
@@ -71,7 +59,7 @@ class DeepSeekAdapter(AgentAdapter):
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": SKILL_INLINE},
+                {"role": "system", "content": build_full_skill_prompt(perception)},
                 {"role": "user", "content": user_msg},
             ],
             "temperature": 0.8,

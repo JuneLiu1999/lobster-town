@@ -27,7 +27,7 @@ c9e74474502c4a21
 
 ```bash
 # 拿源码（暂时还没发 PyPI）
-git clone https://github.com/JuneLiu1999/lobster-town.git lobster-town
+git clone <repo-url> lobster-town
 cd lobster-town/connector
 pip install -e .
 

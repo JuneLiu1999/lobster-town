@@ -1,0 +1,16 @@
+# The literal prompt that Connector sends to OpenClaw
+
+# The perception block is injected where {{PERCEPTION_JSON}} is:
+
+---
+
+【龙虾小镇 · 场景感知】
+{{PERCEPTION_JSON}}
+
+请严格按照已安装的 Lobster Town Skill 规范返回 JSON：
+{
+  "thought": "...",
+  "action": { "type": "...", "content": ... }
+}
+
+只返回 JSON，不要额外解释。

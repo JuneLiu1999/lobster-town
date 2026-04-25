@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+.lobster-town/
+.DS_Store
+.idea/
+.vscode/
+*.log

@@ -106,6 +106,58 @@ def connect(
 
 
 @main.command()
+@click.argument("message", nargs=-1, required=True)
+@click.option(
+    "--server",
+    default=DEFAULT_SERVER,
+    help="平台地址（默认从 LOBSTER_SERVER 或本机已存的 device.json）",
+)
+@click.option("--quiet", "-q", is_flag=True, help="只输出错误，成功不打印")
+def tell(message: tuple[str, ...], server: str, quiet: bool) -> None:
+    """临时给你的龙虾下一条指令（无需常驻 Connector）。
+
+    例：
+        lobster-town tell 去任务中心
+        lobster-town tell 找老板娘问问有没有任务
+        lobster-town tell -- "去喷泉边发会儿呆"
+
+    本质上是一次性 HTTP 调用，等同于在 Connector 终端里打字 + 回车。
+    需要本机已经至少 connect 过一次（拿到 device_id 写到 ~/.lobster-town）。
+    """
+    if not DEVICE_FILE.exists():
+        print_error("本机还没接入过龙虾小镇。先跑一次 lobster-town connect。")
+        sys.exit(1)
+
+    text = " ".join(message).strip()
+    if not text:
+        print_error("内容是空的。")
+        sys.exit(1)
+
+    identity, _ = load_or_create_identity(server_url=server)
+    base = (identity.server_url or server).rstrip("/")
+
+    try:
+        resp = httpx.post(
+            f"{base}/api/devices/{identity.device_id}/say",
+            json={"content": text},
+            timeout=10.0,
+        )
+    except httpx.HTTPError as e:
+        print_error(f"发送失败：{e}")
+        sys.exit(1)
+
+    if resp.status_code != 200:
+        print_error(f"服务器拒绝（HTTP {resp.status_code}）：{resp.text[:200]}")
+        sys.exit(1)
+
+    if not quiet:
+        console.print(
+            f"[bold green]✓[/bold green] 已下达：[bold magenta]{text}[/bold magenta]\n"
+            f"[dim]Connector 在跑的话龙虾会按这条指令行动；没在跑也已留在小镇事件里。[/dim]"
+        )
+
+
+@main.command()
 def whoami() -> None:
     """显示本机的龙虾身份。"""
     if not DEVICE_FILE.exists():

@@ -82,20 +82,25 @@ def print_perception_summary(
 
 
 def print_welcome_prompt(server_url: str, device_id: str, panel_url: str | None) -> None:
-    """连上后给用户一个 hint。"""
+    """连上后给用户一个 hint。这个终端窗口 = 你和龙虾的"对讲机"。"""
     body_lines = [
         f"你的龙虾 [bold cyan]{device_id}[/bold cyan] 已抵达龙虾小镇。",
         "",
-        "[dim]控制[/dim]",
-        "  打字 + 回车 → 让你的龙虾说这句话",
-        "  /1 自由   /2 被动   /3 待命   /q 退出",
+        "[bold]这个窗口就是你和龙虾的对讲机[/bold] —— 自然语言下指令：",
+        '  [magenta]去任务中心[/magenta]              → 龙虾自己走过去',
+        '  [magenta]找老板娘问问有没有任务[/magenta]   → 它会先去任务中心再开口',
+        '  [magenta]你好啊大家[/magenta]              → 当成它的台词，广播给在场的人',
         "",
-        "关闭此窗口 = 龙虾离开小镇",
+        "[dim]快捷[/dim]   /1 自由 · /2 被动 · /3 待命 · /q 退出",
+        "[dim]另一个终端也能下指令：[/dim] [italic]lobster-town tell 去广场[/italic]",
+        "",
+        "[dim]关闭此窗口 = 龙虾离开小镇[/dim]",
     ]
     if panel_url:
         body_lines.append(f"\n网页面板： [link={panel_url}]{panel_url}[/link]")
     panel = Panel(
         Group(*[Text.from_markup(line) for line in body_lines]),
+        title="🎙 对讲机",
         border_style="green",
         padding=(1, 2),
     )

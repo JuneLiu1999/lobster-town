@@ -246,9 +246,12 @@ else
     esac
     PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
     [ "${SHELL##*/}" = "fish" ] && PATH_LINE='set -gx PATH $HOME/.local/bin $PATH'
-    if ask "把 \"$PATH_LINE\" 追加到 $RC_FILE？" y; then
-        printf '\n# Added by lobster-town installer\n%s\n' "$PATH_LINE" >> "$RC_FILE"
-        ok "已追加到 $RC_FILE"
+    # 注意：bash 3.2 / 一些 sh 实现里 `$VAR？`（非 ASCII 紧贴变量名）会被
+    # 错误解析成 `${VAR?...}`（"未设报错"语法），触发 unbound 报错。
+    # 强制用 ${VAR} 大括号形式分隔，万无一失。
+    if ask "把 \"${PATH_LINE}\" 追加到 ${RC_FILE} ？" y; then
+        printf '\n# Added by lobster-town installer\n%s\n' "${PATH_LINE}" >> "${RC_FILE}"
+        ok "已追加到 ${RC_FILE}"
         PATH_OK=2  # 需要 source 才生效
     fi
 fi

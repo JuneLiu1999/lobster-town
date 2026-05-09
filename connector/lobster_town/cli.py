@@ -245,6 +245,61 @@ def _maybe_deepseek_adapter():
     return deepseek_from_env()
 
 
+def _post_register(server: str, body: dict) -> httpx.Response:
+    return httpx.post(
+        server.rstrip("/") + "/api/devices/register",
+        json=body,
+        timeout=15.0,
+    )
+
+
+def _register_with_invite_retry(
+    server: str, body: dict, initial_invite: str | None
+) -> dict:
+    """注册流程：
+      - 没传邀请码 → 直接试一次
+      - 服务端 403 = 需要邀请码 → 交互式询问 → 重试
+      - 输 3 次还失败 → 抛 RuntimeError
+    """
+    if initial_invite:
+        body["invite_code"] = initial_invite
+
+    resp = _post_register(server, body)
+    if resp.status_code != 403:
+        resp.raise_for_status()
+        return resp.json()
+
+    # 403：可能是首次进 + 没带邀请码，也可能是邀请码错。
+    # 给最多 3 次机会让用户输入。
+    for attempt in range(1, 4):
+        if attempt == 1:
+            console.print(
+                "\n[bold yellow]🎟  这是你第一次进入小镇，需要邀请码。[/bold yellow]"
+            )
+            console.print(
+                "[dim]  · 找内测组织者拿；[/dim]\n"
+                "[dim]  · 或在 GitHub 仓库 Issues 留言："
+                "https://github.com/JuneLiu1999/lobster-town/issues[/dim]"
+            )
+        else:
+            console.print(
+                f"[yellow]邀请码无效，再试一次（{attempt}/3）[/yellow]"
+            )
+        try:
+            invite = click.prompt("邀请码", default="", show_default=False).strip()
+        except (click.Abort, EOFError, KeyboardInterrupt):
+            raise RuntimeError("用户取消输入")
+        if not invite:
+            raise RuntimeError("没输入邀请码")
+        body["invite_code"] = invite
+        resp = _post_register(server, body)
+        if resp.status_code == 200:
+            return resp.json()
+        if resp.status_code != 403:
+            resp.raise_for_status()
+    raise RuntimeError("邀请码 3 次都不对；找内测组织者确认")
+
+
 @main.command()
 @click.option("--server", default=DEFAULT_SERVER, help="平台地址")
 @click.option("--display-name", default=None, help="你的龙虾昵称（首次注册用）")
@@ -318,28 +373,15 @@ def start(
 
     console.print(f"[dim]→ 走向小镇入口 {server} ...[/dim]")
     try:
-        resp = httpx.post(
-            server.rstrip("/") + "/api/devices/register",
-            json=register_body,
-            timeout=15.0,
-        )
-        if resp.status_code == 403:
-            print_error("登记被拒：可能需要邀请码。")
-            console.print(
-                "[dim]用 --invite-code <code> 或 LOBSTER_INVITE_CODE 环境变量。[/dim]\n"
-                "[dim]找内测组织者拿邀请码。[/dim]"
-            )
-            sys.exit(1)
-        resp.raise_for_status()
-        data = resp.json()
-        device_id = data["device_id"]
-        if data.get("is_new"):
-            console.print(f"[green]✓[/green] 已登记：{data['display_name']} ({device_id})")
-        else:
-            console.print(f"[green]✓[/green] 欢迎回来：{data['display_name']} ({device_id})")
+        data = _register_with_invite_retry(server, register_body, invite_code)
     except (httpx.HTTPError, Exception) as e:
         print_error(f"登记失败：{e}")
         sys.exit(1)
+    device_id = data["device_id"]
+    if data.get("is_new"):
+        console.print(f"[green]✓[/green] 已登记：{data['display_name']} ({device_id})")
+    else:
+        console.print(f"[green]✓[/green] 欢迎回来：{data['display_name']} ({device_id})")
 
     panel_url = f"{server.rstrip('/')}/?d={device_id}"
 
@@ -679,10 +721,14 @@ def status() -> None:
 
 
 @main.command()
-@click.option("--keep-identity", is_flag=True, help="保留本地身份（默认会删）")
+@click.option(
+    "--purge",
+    is_flag=True,
+    help="同时删本地身份（device.json + private_key.bin）。默认会保留——身份不可恢复，谨慎。",
+)
 @click.confirmation_option(prompt="确定要卸载 lobster-town？")
-def uninstall(keep_identity: bool) -> None:
-    """卸载 connector（venv + symlink），可选保留身份文件。"""
+def uninstall(purge: bool) -> None:
+    """卸载 connector（venv + symlink）。**默认保留身份**——下次重装直接 lobster-town start 即可恢复。"""
     import shutil
 
     # 先停掉守护进程（如果在跑）
@@ -725,7 +771,7 @@ def uninstall(keep_identity: bool) -> None:
     except Exception:
         pass
 
-    if not keep_identity and (home / ".lobster-town").exists():
+    if purge and (home / ".lobster-town").exists():
         try:
             shutil.rmtree(home / ".lobster-town")
             removed.append(str(home / ".lobster-town"))

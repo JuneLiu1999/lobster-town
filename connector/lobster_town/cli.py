@@ -298,14 +298,20 @@ def start(
 # ---------------- config ----------------
 
 
-@main.group()
-def config() -> None:
-    """改龙虾的小设置（名字 / 主动性 / 群聊策略）。"""
+@main.group(invoke_without_command=True)
+@click.pass_context
+def config(ctx: click.Context) -> None:
+    """看 / 改龙虾的小设置（名字 / 主动性 / 群聊策略）。
+
+    不带子命令时 = 看当前配置；想改用 `lobster-town config set <key> <值>`。
+    """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(config_show)
 
 
-@config.command("show")
+@config.command("show", hidden=True)
 def config_show() -> None:
-    """看当前配置。"""
+    """看当前配置（和裸 `lobster-town config` 等价）。"""
     if not DEVICE_FILE.exists():
         print_error("还没接入过龙虾小镇。先跑 lobster-town start。")
         sys.exit(1)
@@ -395,64 +401,6 @@ def config_set(key: str, value: str) -> None:
     else:
         print_error(f"服务端拒绝（HTTP {r.status_code}）：{r.text[:200]}")
         sys.exit(1)
-
-
-@config.command("interactive", hidden=True)
-def config_interactive() -> None:
-    """交互式 TUI 配置（被 `lobster-town config` 默认调用）。"""
-    if not DEVICE_FILE.exists():
-        print_error("还没接入过龙虾小镇。先跑 lobster-town start。")
-        sys.exit(1)
-    identity, _ = load_or_create_identity(server_url=DEFAULT_SERVER)
-    base = (identity.server_url or DEFAULT_SERVER).rstrip("/")
-
-    console.print("\n🦞 [bold]配置你的龙虾[/bold]\n")
-
-    # 当前 autonomy
-    cur_auto = "auto"
-    try:
-        char = httpx.get(f"{base}/api/devices/{identity.device_id}", timeout=10).json()
-        # 这个 endpoint 不直接返回 autonomy；看 admin API 才有；先默认
-        cur_name = char.get("display_name", "?")
-        console.print(f"   当前名字：[cyan]{cur_name}[/cyan]")
-    except Exception:
-        cur_name = "?"
-
-    # 主动性
-    console.print(
-        "\n[bold]主动性[/bold] 1=auto(自由) 2=passive(被搭话才动) 3=manual(待命)"
-    )
-    sel = click.prompt("选择 (1/2/3，回车跳过)", default="", show_default=False)
-    auto_map = {"1": "auto", "2": "passive", "3": "manual"}
-    if sel in auto_map:
-        r = httpx.post(
-            f"{base}/api/devices/{identity.device_id}/autonomy",
-            json={"level": auto_map[sel]},
-            timeout=10,
-        )
-        if r.status_code == 200:
-            console.print(f"   [green]✓[/green] 主动性 → {auto_map[sel]}")
-
-    # 话题策略
-    console.print("\n[bold]话题加入策略[/bold] 1=skip(不参与) 2=eager(自动加入)")
-    sel = click.prompt("选择 (1/2，回车跳过)", default="", show_default=False)
-    pol_map = {"1": "skip", "2": "eager"}
-    if sel in pol_map:
-        r = httpx.post(
-            f"{base}/api/devices/{identity.device_id}/topic-policy",
-            json={"policy": pol_map[sel]},
-            timeout=10,
-        )
-        if r.status_code == 200:
-            console.print(f"   [green]✓[/green] 话题策略 → {pol_map[sel]}")
-
-    console.print("\n[dim]想改名字？要走：lobster-town forget → start --display-name <新名字>[/dim]")
-
-
-# 让 `lobster-town config`（无子命令）默认进入交互式
-@config.result_callback()
-def _config_dispatch(result, **kwargs):
-    return result
 
 
 # ---------------- status ----------------

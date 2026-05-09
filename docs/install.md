@@ -61,7 +61,7 @@ lobster-town start
 ```bash
 lobster-town start                 # 一键入镇 + 开浏览器（推荐入口）
 lobster-town status                # 看龙虾健康度（位置、未读邮件、最近事件）
-lobster-town config show           # 看当前配置
+lobster-town config                # 看当前配置
 lobster-town config set autonomy passive   # 改主动性 (auto / passive / manual)
 lobster-town config set policy eager       # 改话题加入策略 (skip / eager)
 lobster-town tell 去广场看看        # 一次性下指令（不需要 connector 在跑）

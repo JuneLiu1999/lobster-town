@@ -180,6 +180,7 @@ def tell(message: tuple[str, ...], server: str, quiet: bool) -> None:
         resp = httpx.post(
             f"{base}/api/devices/{identity.device_id}/directive",
             json={"content": text},
+            headers=_authed_headers(base, identity),
             timeout=10.0,
         )
     except httpx.HTTPError as e:
@@ -251,6 +252,48 @@ def _post_register(server: str, body: dict) -> httpx.Response:
         json=body,
         timeout=15.0,
     )
+
+
+def _authed_headers(server: str, identity) -> dict[str, str]:
+    """给 CLI 命令拉一次性 token 并组装 Authorization 头。
+    失败返回空 dict（让上层调用走未鉴权路径，可能拿到 401）。
+    """
+    token = _request_browser_token(server, identity)
+    if token:
+        return {"Authorization": f"Bearer {token}"}
+    return {}
+
+
+def _request_browser_token(server: str, identity) -> str | None:
+    """challenge → sign → exchange → 返回 24h token；任何步骤失败返回 None。
+
+    浏览器侧用这个 token 调敏感 API（recent-events / inbox / say / directive 等）。
+    没 token 也能进 cottage 看公开布局，但所有"读自己 thought / 发指令"都会 401。
+    """
+    base = server.rstrip("/")
+    try:
+        r = httpx.post(
+            f"{base}/api/devices/{identity.device_id}/auth/challenge",
+            json={},
+            timeout=10,
+        )
+        r.raise_for_status()
+        nonce = r.json()["nonce"]
+    except (httpx.HTTPError, KeyError, Exception) as e:
+        console.print(f"[dim]token: challenge 失败（{e}）[/dim]")
+        return None
+    sig = identity.sign(nonce.encode()).hex()
+    try:
+        r2 = httpx.post(
+            f"{base}/api/devices/{identity.device_id}/auth/token",
+            json={"nonce": nonce, "signature": sig},
+            timeout=10,
+        )
+        r2.raise_for_status()
+        return r2.json()["token"]
+    except (httpx.HTTPError, KeyError, Exception) as e:
+        console.print(f"[dim]token: exchange 失败（{e}）[/dim]")
+        return None
 
 
 def _register_with_invite_retry(
@@ -383,13 +426,23 @@ def start(
     else:
         console.print(f"[green]✓[/green] 欢迎回来：{data['display_name']} ({device_id})")
 
+    # 拿浏览器会话 token —— 用 Ed25519 私钥签 challenge 换的，
+    # 让网页能读 thought / inbox 这些敏感数据；没 token 别人即使有 device_id
+    # 也只看公开静态页。
+    browser_token = _request_browser_token(server, identity)
     panel_url = f"{server.rstrip('/')}/?d={device_id}"
+    if browser_token:
+        panel_url += f"&t={browser_token}"
 
     # 开浏览器
     if not no_browser:
         try:
             webbrowser.open(panel_url)
-            console.print(f"[dim]→ 浏览器已打开：{panel_url}[/dim]")
+            # 别在终端打出 token 全文 —— 防截屏泄露
+            short_url = f"{server.rstrip('/')}/?d={device_id}" + (
+                "&t=…" if browser_token else ""
+            )
+            console.print(f"[dim]→ 浏览器已打开：{short_url}[/dim]")
         except Exception:
             console.print(f"[dim]→ 浏览器打开失败，手动访问：{panel_url}[/dim]")
 
@@ -595,6 +648,7 @@ def config_show() -> None:
     try:
         ts = httpx.get(
             f"{base}/api/devices/{identity.device_id}/topic-state",
+            headers=_authed_headers(base, identity),
             timeout=10.0,
         )
         if ts.status_code == 200:
@@ -626,6 +680,7 @@ def config_set(key: str, value: str) -> None:
     identity, _ = load_or_create_identity(server_url=DEFAULT_SERVER)
     base = (identity.server_url or DEFAULT_SERVER).rstrip("/")
 
+    headers = _authed_headers(base, identity)
     if key == "autonomy":
         if value not in _VALID_AUTONOMY:
             print_error(f"autonomy 取值必须是 {sorted(_VALID_AUTONOMY)} 之一")
@@ -633,6 +688,7 @@ def config_set(key: str, value: str) -> None:
         r = httpx.post(
             f"{base}/api/devices/{identity.device_id}/autonomy",
             json={"level": value},
+            headers=headers,
             timeout=10.0,
         )
     elif key == "policy":
@@ -642,6 +698,7 @@ def config_set(key: str, value: str) -> None:
         r = httpx.post(
             f"{base}/api/devices/{identity.device_id}/topic-policy",
             json={"policy": value},
+            headers=headers,
             timeout=10.0,
         )
     elif key == "name":
@@ -689,10 +746,14 @@ def status() -> None:
     else:
         console.print(f"   守护进程：⚪ 没在跑（lobster-town start 启动）")
 
+    # 拉一次 token，给两个敏感接口共用
+    headers = _authed_headers(base, identity)
+
     # 邮箱未读
     try:
         unread = httpx.get(
             f"{base}/api/devices/{identity.device_id}/inbox/unread-count",
+            headers=headers,
             timeout=10,
         )
         if unread.status_code == 200:
@@ -706,9 +767,10 @@ def status() -> None:
     try:
         evs = httpx.get(
             f"{base}/api/devices/{identity.device_id}/recent-events?limit=5",
+            headers=headers,
             timeout=10,
         ).json()
-        if evs:
+        if isinstance(evs, list) and evs:
             console.print("\n   [bold]最近 5 条：[/bold]")
             for e in evs:
                 t = (e.get("created_at") or "")[11:19]

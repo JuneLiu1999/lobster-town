@@ -152,7 +152,7 @@ def tell(message: tuple[str, ...], server: str, quiet: bool) -> None:
     """临时给你的龙虾下一条指令（无需常驻 Connector）。
 
     例：
-        lobster-town tell 去任务中心
+        lobster-town tell 去酒馆
         lobster-town tell 找老板娘问问有没有任务
         lobster-town tell -- "去喷泉边发会儿呆"
 

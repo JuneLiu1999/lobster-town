@@ -91,7 +91,7 @@ def print_welcome_prompt(server_url: str, device_id: str, panel_url: str | None)
         "[bold yellow]→ 下指令请用：[/bold yellow]",
         "  [bold]网页对话框[/bold]：和你的龙虾自然对话",
         '    例：[magenta]"去广场看看"[/magenta] / [magenta]"对大家说你好"[/magenta] / [magenta]"找老板娘问任务"[/magenta]',
-        "  [bold]或终端命令[/bold]：[italic]lobster-town tell 去任务中心[/italic]",
+        "  [bold]或终端命令[/bold]：[italic]lobster-town tell 去酒馆[/italic]",
         "",
         "[dim]关闭此窗口 = 龙虾离开小镇  ·  Ctrl+C 退出[/dim]",
     ]

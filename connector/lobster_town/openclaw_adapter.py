@@ -111,7 +111,8 @@ class OpenClawAdapter(AgentAdapter):
     def __init__(
         self,
         binary: str = "openclaw",
-        timeout_seconds: int = 30,
+        # 实测本地 OpenClaw 一次调用可达 60-70s，30s 太紧会永远超时
+        timeout_seconds: int = 90,
         thinking: str = "off",
     ) -> None:
         self.binary = binary
@@ -340,6 +341,18 @@ class OpenClawAdapter(AgentAdapter):
                 "OpenClaw returned JSON without valid action: %s",
                 str(data)[:500],
             )
+            # OpenClaw 平台错误（如 workspace 停用 / 未登录）——别静默发呆，
+            # 把错误码亮给用户
+            err_code = None
+            detail = data.get("detail")
+            if isinstance(detail, dict):
+                err_code = detail.get("code") or detail.get("message")
+            err_code = err_code or data.get("error") or data.get("code")
+            if err_code:
+                return fallback_idle(
+                    raw=raw,
+                    user_hint=f"⚠️ OpenClaw 平台错误：{err_code}——请检查 openclaw 的登录/订阅状态（跑一次 openclaw status）",
+                )
             return fallback_idle(raw=raw)
 
         return AgentResponse(thought=thought, action=action, raw_text=raw, tokens_used=tokens_used)

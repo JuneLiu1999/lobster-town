@@ -61,6 +61,8 @@ class BehaviorLoop:
         self._reconnect_delay_max = 60.0
         # 任务中心工作请求：独立于决策循环的后台任务
         self._work_tasks: set[asyncio.Task] = set()
+        # 决策进行中到达的最新 perception（只留最新一条，决策完成后立刻使用）
+        self._stashed_perception: dict[str, Any] | None = None
 
     async def run(self) -> None:
         """最外层：断线重连包装。"""
@@ -155,6 +157,7 @@ class BehaviorLoop:
 
                 # ---- 决策完成 ----
                 if decide_task in done:
+                    decide_finished = True
                     try:
                         response = decide_task.result()
                         is_error = response.thought.startswith("⚠️")
@@ -180,10 +183,21 @@ class BehaviorLoop:
                             act_msg["thought"] = response.thought
                         await ws.send(json.dumps(act_msg))
                     except asyncio.CancelledError:
-                        logger.debug("decision cancelled (newer perception arrived)")
+                        logger.debug("decision cancelled")
                     except Exception:
                         logger.exception("decide task failed")
                     decide_task = None
+                    # 决策期间攒下的最新 perception：立刻开下一轮
+                    if decide_finished and self._stashed_perception is not None:
+                        stashed = self._stashed_perception
+                        self._stashed_perception = None
+                        perception = Perception(raw=stashed)
+                        print_perception_summary(
+                            perception.location_name,
+                            perception.my_position,
+                            perception.nearby_names,
+                        )
+                        decide_task = asyncio.create_task(self.adapter.decide(stashed))
 
                 # ---- 收到 WS 消息 ----
                 if pending_recv in done:
@@ -219,25 +233,24 @@ class BehaviorLoop:
                     for m in non_perceptions:
                         await self._handle_non_perception(ws, m)
 
-                    # 有新 perception → 开始（或重启）决策
+                    # 有新 perception：
+                    # - 空闲 → 立刻开始决策
+                    # - 决策进行中 → **不打断**（慢大脑会被永远饿死），
+                    #   暂存最新的，等本轮完成后立刻用它开下一轮
                     if latest_perception is not None:
                         if decide_task is not None and not decide_task.done():
-                            decide_task.cancel()
-                            try:
-                                await decide_task
-                            except asyncio.CancelledError:
-                                pass
-                            logger.info("cancelled stale decision, restarting with fresh perception")
-
-                        perception = Perception(raw=latest_perception)
-                        print_perception_summary(
-                            perception.location_name,
-                            perception.my_position,
-                            perception.nearby_names,
-                        )
-                        decide_task = asyncio.create_task(
-                            self.adapter.decide(latest_perception)
-                        )
+                            self._stashed_perception = latest_perception
+                            logger.debug("decision in flight; stashed freshest perception")
+                        else:
+                            perception = Perception(raw=latest_perception)
+                            print_perception_summary(
+                                perception.location_name,
+                                perception.my_position,
+                                perception.nearby_names,
+                            )
+                            decide_task = asyncio.create_task(
+                                self.adapter.decide(latest_perception)
+                            )
 
         finally:
             # 清理

@@ -1,5 +1,8 @@
 """
-DeepSeek Adapter —— 临时测试用，直连 DeepSeek 的 OpenAI 兼容接口。
+DeepSeek Adapter —— **已废弃**，仅为老用户兼容保留。
+
+新用户请用 `lobster-town setup` 走 direct 模式（generic_llm_adapter），
+功能是超集：持久连接池、prompt cache、任意 OpenAI 兼容端点。
 
 读取 env 里的 `LOBSTER_DEEPSEEK_KEY`（不落盘、不打日志）。
 模型默认 `deepseek-chat`，URL `https://api.deepseek.com/v1/chat/completions`。
@@ -26,6 +29,19 @@ from lobster_town.openclaw_adapter import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _deepseek_error_hint(status: int) -> str:
+    """根据 HTTP 状态码返回面向用户的中文提示。"""
+    if status == 401:
+        return "⚠️ DeepSeek API 认证失败（401）：API Key 无效或已过期，请更换 Key。"
+    if status == 402:
+        return "⚠️ DeepSeek API 余额不足（402）：账户余额已用完，请前往 platform.deepseek.com 充值。"
+    if status == 429:
+        return "⚠️ DeepSeek API 请求过于频繁（429）：已触发速率限制，稍后会自动重试。"
+    if 500 <= status < 600:
+        return f"⚠️ DeepSeek 服务端错误（{status}）：服务暂时不可用，稍后会自动重试。"
+    return f"⚠️ DeepSeek API 调用失败（HTTP {status}）：请检查配置或联系 DeepSeek。"
 
 
 class DeepSeekAdapter(AgentAdapter):
@@ -77,11 +93,16 @@ class DeepSeekAdapter(AgentAdapter):
                 )
         except (httpx.HTTPError, asyncio.TimeoutError) as e:
             logger.warning(f"DeepSeek call failed: {e!r}")
-            return fallback_idle(raw=str(e))
+            if isinstance(e, asyncio.TimeoutError):
+                hint = "⚠️ DeepSeek API 请求超时：网络连接缓慢或服务端无响应，稍后会自动重试。"
+            else:
+                hint = f"⚠️ DeepSeek API 网络错误：无法连接到 {self.base_url}，请检查网络。"
+            return fallback_idle(raw=str(e), user_hint=hint)
 
         if resp.status_code != 200:
             logger.warning(f"DeepSeek {resp.status_code}: {resp.text[:500]}")
-            return fallback_idle(raw=resp.text)
+            hint = _deepseek_error_hint(resp.status_code)
+            return fallback_idle(raw=resp.text, user_hint=hint)
 
         data = resp.json()
         choice = (data.get("choices") or [{}])[0]

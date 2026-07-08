@@ -25,15 +25,7 @@ import subprocess
 from dataclasses import dataclass
 from typing import Any
 
-from lobster_town.skill_prompt import SKILL_INLINE, TOPIC_MODE_INLINE
-
-
-def _has_topic_fields(perception: dict[str, Any]) -> bool:
-    """perception 里是否带了群聊模式字段（后端 TOPIC_MODE_ENABLED=true 时才有）。"""
-    return any(
-        k in perception
-        for k in ("pending_topic_invites", "active_conversations", "topic_join_policy")
-    )
+from lobster_town.skill_prompt import SKILL_INLINE
 
 
 def build_perception_summary(perception: dict[str, Any]) -> dict[str, Any]:
@@ -53,19 +45,20 @@ def build_perception_summary(perception: dict[str, Any]) -> dict[str, Any]:
         "周围的角色": perception.get("nearby_characters", []),
         "最近事件": perception.get("recent_events", []),
     }
-    if _has_topic_fields(perception):
-        summary["群聊状态"] = {
-            "我的话题加入策略": perception.get("topic_join_policy"),
-            "已加入的群聊": perception.get("active_conversations", []),
-            "待决话题邀请": perception.get("pending_topic_invites", []),
-        }
+    # 任务中心字段：招募板（仅 task_hall）+ 手头的工作
+    if perception.get("task_board"):
+        summary["任务招募板"] = perception["task_board"]
+    if perception.get("my_work"):
+        summary["我手头的工作"] = perception["my_work"]
     return summary
 
 
 def build_full_skill_prompt(perception: dict[str, Any]) -> str:
-    """根据 perception 是否带群聊字段，决定是否追加 TOPIC_MODE_INLINE。"""
-    if _has_topic_fields(perception):
-        return SKILL_INLINE + "\n\n" + TOPIC_MODE_INLINE
+    """组装完整的 skill 系统提示（direct / deepseek adapter 的 system message）。
+
+    v0.8.1 移除 topic-mode 后不再按 perception 拼接附加段，恒为 SKILL_INLINE；
+    保留参数是为了签名兼容。
+    """
     return SKILL_INLINE
 
 logger = logging.getLogger(__name__)
@@ -95,6 +88,15 @@ class AgentAdapter(abc.ABC):
     async def decide(self, perception: dict[str, Any]) -> AgentResponse:
         """把感知输入交给本地 agent，返回决策。"""
         ...
+
+    async def work(self, prompt: str, max_tokens: int) -> str | None:
+        """执行一次任务中心的「工作请求」（拆解/写作等大产出），返回原始文本。
+
+        与 decide() 的区别：prompt 由服务端完整下发（不注入 SKILL_INLINE），
+        输出由服务端解析校验。不支持的 adapter 返回 None（connector 会回
+        work_decline，槽位释放给别的龙虾）。
+        """
+        return None
 
 
 class OpenClawAdapter(AgentAdapter):
@@ -141,6 +143,7 @@ class OpenClawAdapter(AgentAdapter):
             prompt,
         ]
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -151,7 +154,21 @@ class OpenClawAdapter(AgentAdapter):
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=self.timeout_seconds + 5
             )
+        except asyncio.CancelledError:
+            if proc and proc.returncode is None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+            raise
         except (asyncio.TimeoutError, FileNotFoundError) as e:
+            if proc and proc.returncode is None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
             logger.warning(f"OpenClaw call failed: {e!r}")
             return fallback_idle(raw=str(e))
 
@@ -170,19 +187,80 @@ class OpenClawAdapter(AgentAdapter):
 
         return self._parse_response(envelope_text or out_text or err_text)
 
+    async def work(self, prompt: str, max_tokens: int) -> str | None:
+        """用一次性 session 跑工作请求（不污染日常决策 session）。
+
+        max_tokens 对 openclaw CLI 不直接生效（由其内部模型配置决定），
+        这里只用它粗估超时：产出越大给越久。
+        """
+        import uuid as _uuid
+
+        timeout = max(90, min(300, max_tokens // 20))
+        session_id = f"lobster-work-{_uuid.uuid4().hex[:8]}"
+        cmd = [
+            self.binary, "agent", "--local", "--json",
+            "--thinking", self.thinking,
+            "--session-id", session_id,
+            "--timeout", str(timeout),
+            "--message", prompt,
+        ]
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout + 10
+            )
+        except asyncio.CancelledError:
+            if proc and proc.returncode is None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+            raise
+        except (asyncio.TimeoutError, FileNotFoundError) as e:
+            if proc and proc.returncode is None:
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+            logger.warning(f"OpenClaw work call failed: {e!r}")
+            return None
+
+        out_text = stdout.decode(errors="replace").strip()
+        err_text = stderr.decode(errors="replace").strip()
+        envelope_text = find_json_blob(out_text) or find_json_blob(err_text)
+        if not envelope_text:
+            return out_text or err_text or None
+
+        try:
+            envelope = json.loads(envelope_text)
+        except json.JSONDecodeError:
+            return envelope_text
+        if isinstance(envelope, dict):
+            if envelope.get("meta", {}).get("aborted"):
+                logger.warning("OpenClaw work run aborted")
+                return None
+            payloads = envelope.get("payloads") or []
+            if payloads and isinstance(payloads[0], dict):
+                return str(payloads[0].get("text") or "") or None
+        return envelope_text
+
     def _build_prompt(self, perception: dict[str, Any]) -> str:
         """构造给 OpenClaw 的提示。
 
         MVP 阶段把 Skill 规则内联到 prompt 里，因为 OpenClaw 仅识别 ClawHub
         分发的 skill，手动放到 workspace 不会被加载。未来 skill 上架 ClawHub
         后可以去掉 `SKILL_INLINE` 这段，回到"只发 perception"的形式。
-
-        群聊模式：当 perception 里出现 pending_topic_invites / active_conversations
-        / topic_join_policy 任一字段时，自动追加 TOPIC_MODE_INLINE 规则段。
         """
         summary = build_perception_summary(perception)
         return (
-            build_full_skill_prompt(perception)
+            SKILL_INLINE
             + "\n\n【龙虾小镇 · 场景感知】\n"
             + json.dumps(summary, ensure_ascii=False, indent=2)
             + "\n\n严格按上面的规则，只返回一个 JSON 对象（thought + action），不要任何解释或 markdown 包裹。"
@@ -299,10 +377,19 @@ def find_json_blob(text: str) -> str:
     return ""
 
 
-def fallback_idle(raw: str) -> AgentResponse:
-    """解析失败或调用失败时，退化为 idle（什么都不做）。"""
+def fallback_idle(raw: str, *, user_hint: str = "") -> AgentResponse:
+    """解析失败或调用失败时，退化为 idle（什么都不做）。
+
+    Parameters
+    ----------
+    raw : str
+        原始响应/错误信息，用于日志。
+    user_hint : str
+        面向用户的可读错误提示。为空时使用默认文案。
+    """
+    thought = user_hint or "（发呆中……好像没什么想法）"
     return AgentResponse(
-        thought="（发呆中……好像没什么想法）",
+        thought=thought,
         action={"type": "idle"},
         raw_text=raw,
     )

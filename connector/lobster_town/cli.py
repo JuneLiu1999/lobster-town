@@ -1,9 +1,10 @@
 """
 CLI 入口。命令：
   lobster-town start     : 一键入镇（连入 + 自动开浏览器，**推荐**）
+  lobster-town setup     : 配置龙虾的大脑（OpenClaw 或 API key 直连）
   lobster-town connect   : 连入小镇（保留作进阶用法）
   lobster-town tell      : 一次性下指令
-  lobster-town config    : 改名字 / 主动性 / 群聊策略
+  lobster-town config    : 改名字 / 主动性 / 大脑配置
   lobster-town status    : 看当前龙虾健康度
   lobster-town whoami    : 显示本机身份
   lobster-town forget    : 清除本地身份（小心）
@@ -131,13 +132,7 @@ def connect(
 
     print_banner(server, identity.device_id, is_new)
 
-    # 临时：支持通过 env var 切换 DeepSeek adapter（测试用）
-    adapter = None
-    from lobster_town.deepseek_adapter import from_env as deepseek_from_env
-    ds = deepseek_from_env()
-    if ds:
-        adapter = ds
-        console.print("[dim]adapter: deepseek (LOBSTER_DEEPSEEK_KEY 已读取)[/dim]")
+    adapter = _resolve_adapter()
 
     try:
         asyncio.run(BehaviorLoop(identity, adapter=adapter, panel_base_url=panel).run())
@@ -240,10 +235,49 @@ def _inject_noproxy(server: str) -> None:
         os.environ["no_proxy"] = os.environ["NO_PROXY"]
 
 
-def _maybe_deepseek_adapter():
+def _resolve_adapter():
+    """按优先级选 adapter：config.json direct > env LOBSTER_DEEPSEEK_KEY（已废弃）> 默认 openclaw。"""
+    import shutil
+
+    from lobster_town.adapter_config import load_config
+
+    cfg = load_config()
+    adapter_type = cfg.get("adapter", "openclaw")
+
+    if adapter_type == "direct":
+        from lobster_town.generic_llm_adapter import from_config
+
+        adapter = from_config()
+        if adapter:
+            console.print(
+                f"🧠 大脑：[bold]direct[/bold] · {adapter.model} [dim]({adapter.base_url})[/dim]"
+            )
+            return adapter
+        console.print(
+            "[yellow]⚠ adapter=direct 但 LLM 配置不全，回退到 OpenClaw。"
+            "跑 [bold]lobster-town setup[/bold] 补全配置。[/yellow]"
+        )
+
+    # 已废弃的 env var 方式（仅兼容保留，提示迁移）
     from lobster_town.deepseek_adapter import from_env as deepseek_from_env
 
-    return deepseek_from_env()
+    ds = deepseek_from_env()
+    if ds:
+        console.print(
+            "🧠 大脑：[bold]deepseek[/bold]（来自 LOBSTER_DEEPSEEK_KEY 环境变量）\n"
+            "[yellow]⚠ 环境变量方式已废弃，请迁移到 [bold]lobster-town setup[/bold]"
+            "（配置会落盘，不用每次 export）[/yellow]"
+        )
+        return ds
+
+    console.print("🧠 大脑：[bold]OpenClaw[/bold]（本机 openclaw 子进程）")
+    if shutil.which("openclaw") is None:
+        console.print(
+            "[yellow]⚠ 本机没找到 openclaw 命令 —— 龙虾不会自主行动（只接你打字的指令）。\n"
+            "  · 装 OpenClaw：https://docs.openclaw.ai/zh-CN/install\n"
+            "  · 或改用 API key 直连：[bold]lobster-town setup[/bold][/yellow]"
+        )
+    return None
 
 
 def _post_register(server: str, body: dict) -> httpx.Response:
@@ -385,19 +419,22 @@ def start(
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    # 已经在跑？只重开浏览器
+    # 已经在跑？签发新 token + 重开浏览器
     pid = _running_pid()
     if pid:
         console.print(f"[yellow]🦞 你的龙虾已经在小镇里 (PID {pid})[/yellow]")
         try:
             identity, _ = load_or_create_identity(server_url=server)
+            browser_token = _request_browser_token(server, identity)
             panel_url = f"{server.rstrip('/')}/?d={identity.device_id}"
+            if browser_token:
+                panel_url += f"&t={browser_token}"
         except Exception:
             panel_url = server
         if not no_browser:
             try:
                 webbrowser.open(panel_url)
-                console.print(f"[dim]浏览器已打开：{panel_url}[/dim]")
+                console.print(f"[dim]浏览器已打开（已刷新 token）[/dim]")
             except Exception:
                 pass
         console.print(
@@ -450,9 +487,7 @@ def start(
     if foreground:
         print_banner(server, identity.device_id, is_new)
         console.print("\n[dim]前台监视器模式（Ctrl+C 退出）[/dim]\n")
-        adapter = _maybe_deepseek_adapter()
-        if adapter:
-            console.print("[dim]adapter: deepseek (LOBSTER_DEEPSEEK_KEY 已读取)[/dim]")
+        adapter = _resolve_adapter()
         try:
             asyncio.run(
                 BehaviorLoop(identity, adapter=adapter, panel_base_url=panel_url).run()
@@ -523,7 +558,7 @@ def _daemon_run(server: str, panel_url: str) -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     identity, _ = load_or_create_identity(server_url=server)
-    adapter = _maybe_deepseek_adapter()
+    adapter = _resolve_adapter()
     try:
         asyncio.run(
             BehaviorLoop(
@@ -605,15 +640,125 @@ def logs(lines: int, follow: bool) -> None:
         sys.stdout.write(line)
 
 
+# ---------------- setup（大脑配置向导） ----------------
+
+
+# 常见 OpenAI 兼容服务预设：名字 → (base_url, 默认模型, 拿 key 的地址)
+_LLM_PRESETS: list[tuple[str, str, str, str]] = [
+    ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat", "https://platform.deepseek.com"),
+    ("Moonshot Kimi", "https://api.moonshot.cn/v1", "moonshot-v1-8k", "https://platform.moonshot.cn"),
+    ("OpenAI", "https://api.openai.com/v1", "gpt-4o-mini", "https://platform.openai.com"),
+]
+
+
+def _check_direct_llm() -> bool:
+    """用当前 config 建 direct adapter，发一次真实请求验证；打印结果。
+
+    配置不全返回 False（不算错误，只提示）；配置全但验证失败也返回 False。
+    """
+    from lobster_town.generic_llm_adapter import from_config
+
+    adapter = from_config()
+    if adapter is None:
+        console.print(
+            "[dim]（llm-base-url / llm-api-key / llm-model 还没配齐，配齐后会自动验证）[/dim]"
+        )
+        return False
+
+    console.print(f"[dim]验证 {adapter.base_url} · {adapter.model} ...[/dim]")
+
+    async def _run() -> tuple[bool, str]:
+        try:
+            return await adapter.health_check()
+        finally:
+            await adapter.close()
+
+    try:
+        ok, detail = asyncio.run(_run())
+    except Exception as e:  # 校验本身不该让 CLI 崩
+        ok, detail = False, f"验证过程出错：{e}"
+
+    if ok:
+        console.print(f"[green]✓[/green] {detail}")
+    else:
+        print_error(detail)
+    return ok
+
+
+@main.command()
+def setup() -> None:
+    """🧠 交互式配置龙虾的大脑（OpenClaw 或 API key 直连）。"""
+    import shutil
+
+    from lobster_town.adapter_config import load_config as _load_cfg, set_value
+
+    cfg = _load_cfg()
+    current = cfg.get("adapter", "openclaw")
+    console.print(f"\n🧠 [bold]给你的龙虾选一个大脑[/bold]  [dim]（当前：{current}）[/dim]\n")
+    console.print("  [bold]1[/bold]. OpenClaw     —— 用本机的 OpenClaw（你的 Claude 账号出智力）")
+    console.print("  [bold]2[/bold]. API key 直连 —— 填一个 OpenAI 兼容 API（DeepSeek / Kimi / OpenAI / 自建）\n")
+
+    choice = click.prompt("选哪个", type=click.Choice(["1", "2"]), show_choices=False)
+
+    if choice == "1":
+        set_value("adapter", "openclaw")
+        console.print("[green]✓[/green] 已设置：adapter = openclaw")
+        if shutil.which("openclaw") is None:
+            console.print(
+                "[yellow]⚠ 本机还没装 OpenClaw。装好后 lobster-town start 龙虾就活了：\n"
+                "  https://docs.openclaw.ai/zh-CN/install[/yellow]"
+            )
+        else:
+            console.print("[dim]本机已有 openclaw 命令，直接 lobster-town start 即可。[/dim]")
+        return
+
+    # ---- 直连路线 ----
+    console.print("\n选一个服务商（都是 OpenAI 兼容接口）：\n")
+    for i, (name, url, model, key_url) in enumerate(_LLM_PRESETS, start=1):
+        console.print(f"  [bold]{i}[/bold]. {name:<14} [dim]{url} · 拿 key：{key_url}[/dim]")
+    console.print(f"  [bold]{len(_LLM_PRESETS) + 1}[/bold]. 自定义        [dim]任何 OpenAI 兼容端点（OpenRouter / Ollama / vLLM ...）[/dim]\n")
+
+    n_choices = [str(i) for i in range(1, len(_LLM_PRESETS) + 2)]
+    pick = int(click.prompt("服务商", type=click.Choice(n_choices), show_choices=False))
+
+    if pick <= len(_LLM_PRESETS):
+        _, base_url, default_model, _ = _LLM_PRESETS[pick - 1]
+        base_url = click.prompt("API 地址", default=base_url)
+    else:
+        base_url = click.prompt("API 地址（一般以 /v1 结尾）").strip()
+        default_model = ""
+
+    api_key = click.prompt("API Key", hide_input=True).strip()
+    model = click.prompt("模型名", default=default_model or None).strip()
+
+    set_value("adapter", "direct")
+    set_value("llm_base_url", base_url.rstrip("/"))
+    set_value("llm_api_key", api_key)
+    set_value("llm_model", model)
+    console.print("[green]✓[/green] 配置已保存到 ~/.lobster-town/config.json（key 权限 600）\n")
+
+    if _check_direct_llm():
+        console.print("\n🦞 大脑接好了！跑 [bold]lobster-town start[/bold] 入镇。")
+    else:
+        console.print(
+            "\n[yellow]配置已保存但验证没通过。改单项用：\n"
+            "  lobster-town config set llm-api-key <key>\n"
+            "  lobster-town config set llm-model <模型名>\n"
+            "或重新跑 lobster-town setup[/yellow]"
+        )
+        sys.exit(1)
+
+
 # ---------------- config ----------------
 
 
 @main.group(invoke_without_command=True)
 @click.pass_context
 def config(ctx: click.Context) -> None:
-    """看 / 改龙虾的小设置（名字 / 主动性 / 群聊策略）。
+    """看 / 改龙虾的小设置（名字 / 主动性 / 大脑配置）。
 
     不带子命令时 = 看当前配置；想改用 `lobster-town config set <key> <值>`。
+    大脑配置推荐用交互式向导：`lobster-town setup`。
     """
     if ctx.invoked_subcommand is None:
         ctx.invoke(config_show)
@@ -644,36 +789,64 @@ def config_show() -> None:
     except Exception as e:
         console.print(f"   [dim]（拉服务端状态失败：{e}）[/dim]")
 
-    # 群聊策略
-    try:
-        ts = httpx.get(
-            f"{base}/api/devices/{identity.device_id}/topic-state",
-            headers=_authed_headers(base, identity),
-            timeout=10.0,
-        )
-        if ts.status_code == 200:
-            policy = ts.json().get("topic_join_policy", "?")
-            label = {"skip": "🛑 不参与", "eager": "💬 自动加入"}.get(policy, policy)
-            console.print(f"   话题策略：{label}")
-    except Exception:
-        pass
+    # adapter 配置
+    from lobster_town.adapter_config import load_config as _load_adapter_cfg, mask_key
+
+    acfg = _load_adapter_cfg()
+    adapter_type = acfg.get("adapter", "openclaw")
+    console.print(f"   adapter：[bold]{adapter_type}[/bold]")
+    if adapter_type == "direct":
+        console.print(f"   llm-base-url：{acfg.get('llm_base_url') or '[dim]未设置[/dim]'}")
+        console.print(f"   llm-api-key：{mask_key(acfg.get('llm_api_key', ''))}")
+        console.print(f"   llm-model：{acfg.get('llm_model') or '[dim]未设置[/dim]'}")
+
 
 
 _VALID_AUTONOMY = {"auto", "passive", "manual"}
-_VALID_POLICY = {"skip", "eager"}
+
+
+_VALID_ADAPTERS = {"openclaw", "direct"}
+_LOCAL_CONFIG_KEYS = {"adapter", "llm-base-url", "llm-api-key", "llm-model"}
+_ALL_CONFIG_KEYS = {"name", "autonomy"} | _LOCAL_CONFIG_KEYS
 
 
 @config.command("set")
-@click.argument("key", type=click.Choice(["name", "autonomy", "policy"]))
+@click.argument("key", type=click.Choice(sorted(_ALL_CONFIG_KEYS)))
 @click.argument("value")
 def config_set(key: str, value: str) -> None:
-    """改单条：lobster-town config set <name|autonomy|policy> <值>。
+    """改单条：lobster-town config set <key> <值>。
 
-    示例：
+    服务端配置：
       lobster-town config set autonomy passive
-      lobster-town config set policy eager
       lobster-town config set name 小蓝
+
+    本地 adapter 配置：
+      lobster-town config set adapter direct
+      lobster-town config set llm-base-url https://api.deepseek.com/v1
+      lobster-town config set llm-api-key sk-...
+      lobster-town config set llm-model deepseek-chat
     """
+    # 本地配置（adapter / LLM）
+    if key in _LOCAL_CONFIG_KEYS:
+        if key == "adapter" and value not in _VALID_ADAPTERS:
+            print_error(f"adapter 取值必须是 {sorted(_VALID_ADAPTERS)} 之一")
+            sys.exit(2)
+        from lobster_town.adapter_config import load_config as _load_cfg, set_value, mask_key
+
+        set_value(key, value)
+        display = mask_key(value) if key == "llm-api-key" else value
+        console.print(f"[green]✓[/green] 已保存：{key} = {display}")
+
+        # 即时校验：direct 模式配齐三件套后立刻发一次真实请求，
+        # 别让用户等到 start 之后才发现 key 填错了
+        if _load_cfg().get("adapter") == "direct" and key != "adapter":
+            if not _check_direct_llm():
+                sys.exit(1)
+        elif key == "adapter" and value == "direct":
+            _check_direct_llm()
+        return
+
+    # 服务端配置
     if not DEVICE_FILE.exists():
         print_error("还没接入过龙虾小镇。先跑 lobster-town start。")
         sys.exit(1)
@@ -691,18 +864,7 @@ def config_set(key: str, value: str) -> None:
             headers=headers,
             timeout=10.0,
         )
-    elif key == "policy":
-        if value not in _VALID_POLICY:
-            print_error(f"policy 取值必须是 {sorted(_VALID_POLICY)} 之一")
-            sys.exit(2)
-        r = httpx.post(
-            f"{base}/api/devices/{identity.device_id}/topic-policy",
-            json={"policy": value},
-            headers=headers,
-            timeout=10.0,
-        )
     elif key == "name":
-        # 平台目前没有改 display_name 的端点；让用户走 forget 再 start
         print_error("改名字暂时要走：lobster-town forget → start --display-name <新名字>")
         console.print("[dim]注意：forget 会丢掉当前身份，重新生成 device_id。[/dim]")
         sys.exit(1)
@@ -722,7 +884,7 @@ def config_set(key: str, value: str) -> None:
 
 @main.command()
 def status() -> None:
-    """看你的龙虾当前状态（位置、最近事件、未读邮件数）。"""
+    """看你的龙虾当前状态（位置、最近事件）。"""
     if not DEVICE_FILE.exists():
         print_error("还没接入过龙虾小镇。先跑 lobster-town start。")
         sys.exit(1)
@@ -746,22 +908,8 @@ def status() -> None:
     else:
         console.print(f"   守护进程：⚪ 没在跑（lobster-town start 启动）")
 
-    # 拉一次 token，给两个敏感接口共用
+    # 拉一次 token 调敏感接口
     headers = _authed_headers(base, identity)
-
-    # 邮箱未读
-    try:
-        unread = httpx.get(
-            f"{base}/api/devices/{identity.device_id}/inbox/unread-count",
-            headers=headers,
-            timeout=10,
-        )
-        if unread.status_code == 200:
-            n = unread.json().get("count", 0)
-            badge = f"[bold red]{n}[/bold red]" if n > 0 else "[dim]0[/dim]"
-            console.print(f"   邮箱未读：✉️ {badge}")
-    except Exception:
-        pass
 
     # 最近 5 条事件
     try:
